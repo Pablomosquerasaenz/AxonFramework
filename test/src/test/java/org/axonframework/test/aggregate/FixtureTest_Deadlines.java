@@ -26,6 +26,8 @@ import org.axonframework.test.AxonAssertionError;
 import org.junit.jupiter.api.*;
 
 import java.time.Duration;
+import java.time.Instant;
+import java.util.Optional;
 
 import static org.axonframework.deadline.GenericDeadlineMessage.asDeadlineMessage;
 import static org.axonframework.modelling.command.AggregateLifecycle.apply;
@@ -42,6 +44,7 @@ class FixtureTest_Deadlines {
     private static final String AGGREGATE_ID = "id";
     private static final CreateMyAggregateCommand CREATE_COMMAND = new CreateMyAggregateCommand(AGGREGATE_ID);
     private static final int TRIGGER_DURATION_MINUTES = 10;
+    private static final Duration TRIGGER_DURATION = Duration.ofMinutes(TRIGGER_DURATION_MINUTES);
     private static final String DEADLINE_NAME = "deadlineName";
     private static final String DEADLINE_PAYLOAD = "deadlineDetails";
     private static final String NONE_OCCURRING_DEADLINE_PAYLOAD = "none-occurring-deadline";
@@ -57,42 +60,42 @@ class FixtureTest_Deadlines {
     void expectScheduledDeadline() {
         fixture.givenNoPriorActivity()
                .when(CREATE_COMMAND)
-               .expectScheduledDeadline(Duration.ofMinutes(TRIGGER_DURATION_MINUTES), DEADLINE_PAYLOAD);
+               .expectScheduledDeadline(TRIGGER_DURATION, DEADLINE_PAYLOAD);
     }
 
     @Test
     void expectScheduledDeadlineOfType() {
         fixture.givenNoPriorActivity()
                .when(CREATE_COMMAND)
-               .expectScheduledDeadlineOfType(Duration.ofMinutes(TRIGGER_DURATION_MINUTES), String.class);
+               .expectScheduledDeadlineOfType(TRIGGER_DURATION, String.class);
     }
 
     @Test
     void expectScheduledDeadlineWithName() {
         fixture.given(new MyAggregateCreatedEvent(AGGREGATE_ID, DEADLINE_NAME, "deadlineId"))
                .when(new SetPayloadlessDeadlineCommand(AGGREGATE_ID))
-               .expectScheduledDeadlineWithName(Duration.ofMinutes(TRIGGER_DURATION_MINUTES), "payloadless-deadline");
+               .expectScheduledDeadlineWithName(TRIGGER_DURATION, "payloadless-deadline");
     }
 
     @Test
     void expectNoScheduledDeadline() {
         fixture.givenCommands(CREATE_COMMAND)
                .when(new ResetTriggerCommand(AGGREGATE_ID))
-               .expectNoScheduledDeadline(Duration.ofMinutes(TRIGGER_DURATION_MINUTES), DEADLINE_PAYLOAD);
+               .expectNoScheduledDeadline(TRIGGER_DURATION, DEADLINE_PAYLOAD);
     }
 
     @Test
     void expectNoScheduledDeadlineOfType() {
         fixture.givenCommands(CREATE_COMMAND)
                .when(new ResetTriggerCommand(AGGREGATE_ID))
-               .expectNoScheduledDeadlineOfType(Duration.ofMinutes(TRIGGER_DURATION_MINUTES), String.class);
+               .expectNoScheduledDeadlineOfType(TRIGGER_DURATION, String.class);
     }
 
     @Test
     void expectNoScheduledDeadlineWithName() {
         fixture.givenCommands(CREATE_COMMAND)
                .when(new ResetTriggerCommand(AGGREGATE_ID))
-               .expectNoScheduledDeadlineWithName(Duration.ofMinutes(TRIGGER_DURATION_MINUTES), DEADLINE_NAME);
+               .expectNoScheduledDeadlineWithName(TRIGGER_DURATION, DEADLINE_NAME);
     }
 
     @Test
@@ -101,7 +104,7 @@ class FixtureTest_Deadlines {
         fixture.givenNoPriorActivity()
                .andGivenCommands(CREATE_COMMAND)
                .whenTimeElapses(Duration.ofMinutes(TRIGGER_DURATION_MINUTES + 1))
-               .expectDeadlinesMetMatching(payloadsMatching(exactSequenceOf(equalTo(DEADLINE_PAYLOAD))));
+               .expectDeadlinesMetMatching(payloadsMatching(exactSequenceOf(deepEquals(DEADLINE_PAYLOAD))));
     }
 
     @Test
@@ -109,7 +112,7 @@ class FixtureTest_Deadlines {
         fixture.givenNoPriorActivity()
                .andGivenCommands(CREATE_COMMAND)
                .whenTimeElapses(Duration.ofMinutes(TRIGGER_DURATION_MINUTES + 1))
-               .expectTriggeredDeadlinesMatching(payloadsMatching(exactSequenceOf(equalTo(DEADLINE_PAYLOAD))));
+               .expectTriggeredDeadlinesMatching(payloadsMatching(exactSequenceOf(deepEquals(DEADLINE_PAYLOAD))));
     }
 
     @Test
@@ -281,13 +284,58 @@ class FixtureTest_Deadlines {
                .expectTriggeredDeadlines("fakeDeadlineDetails");
     }
 
+    @Test
+    void deadlinesSetInThePastAreTriggeredOnWhenElapsedTime() {
+        Instant instantInThePast = Instant.now().minusMillis(50);
+        fixture.givenNoPriorActivity()
+               .andGivenCommands(new CreateMyAggregateCommand(AGGREGATE_ID, instantInThePast))
+               .whenTimeElapses(Duration.ofMillis(5))
+               .expectTriggeredDeadlinesWithName(DEADLINE_NAME)
+               .expectNoScheduledDeadline(instantInThePast.minusMillis(500),
+                                          instantInThePast.plusMillis(5000),
+                                          DEADLINE_PAYLOAD);
+    }
+
+    @Test
+    void deadlinesSetInThePastAreTriggeredOnWhenTimeAdvancesTo() {
+        Instant instantInThePast = Instant.now().minusMillis(50);
+        fixture.givenNoPriorActivity()
+               .andGivenCommands(new CreateMyAggregateCommand(AGGREGATE_ID, instantInThePast))
+               .whenTimeAdvancesTo(instantInThePast.plusMillis(10_000))
+               .expectTriggeredDeadlinesWithName(DEADLINE_NAME)
+               .expectNoScheduledDeadline(instantInThePast.minusMillis(500),
+                                          instantInThePast.plusMillis(5000),
+                                          DEADLINE_PAYLOAD);
+    }
+
+    @Test
+    void deadlinesSetInThePastAreTriggeredOnWhenCommand() {
+        Instant instantInThePast = Instant.now().minusMillis(50);
+        fixture.givenNoPriorActivity()
+               .when(new CreateMyAggregateCommand(AGGREGATE_ID, instantInThePast))
+               .expectTriggeredDeadlinesWithName(DEADLINE_NAME)
+               .expectNoScheduledDeadline(instantInThePast.minusMillis(500),
+                                          instantInThePast.plusMillis(5000),
+                                          DEADLINE_PAYLOAD);
+    }
+
     private static class CreateMyAggregateCommand {
 
         @TargetAggregateIdentifier
         private final String aggregateId;
+        private final Instant scheduledTime;
 
         private CreateMyAggregateCommand(String aggregateId) {
+            this(aggregateId, null);
+        }
+
+        public CreateMyAggregateCommand(String aggregateId, Instant scheduledTime) {
             this.aggregateId = aggregateId;
+            this.scheduledTime = scheduledTime;
+        }
+
+        public Optional<Instant> triggerDateTime() {
+            return Optional.ofNullable(scheduledTime);
         }
     }
 
@@ -354,9 +402,12 @@ class FixtureTest_Deadlines {
         @CommandHandler
         public MyAggregate(CreateMyAggregateCommand command, DeadlineManager deadlineManager) {
             String deadlineName = DEADLINE_NAME;
-            String deadlineId = deadlineManager.schedule(
-                    Duration.ofMinutes(TRIGGER_DURATION_MINUTES), deadlineName, DEADLINE_PAYLOAD
-            );
+            String deadlineId;
+            if (command.triggerDateTime().isPresent()) {
+                deadlineId = deadlineManager.schedule(command.triggerDateTime().get(), deadlineName, DEADLINE_PAYLOAD);
+            } else {
+                deadlineId = deadlineManager.schedule(TRIGGER_DURATION, deadlineName, DEADLINE_PAYLOAD);
+            }
             apply(new MyAggregateCreatedEvent(command.aggregateId, deadlineName, deadlineId));
         }
 
@@ -372,7 +423,7 @@ class FixtureTest_Deadlines {
 
         @CommandHandler
         public void handle(SetPayloadlessDeadlineCommand command, DeadlineManager deadlineManager) {
-            deadlineManager.schedule(Duration.ofMinutes(TRIGGER_DURATION_MINUTES), "payloadless-deadline");
+            deadlineManager.schedule(TRIGGER_DURATION, "payloadless-deadline");
         }
 
         @DeadlineHandler
